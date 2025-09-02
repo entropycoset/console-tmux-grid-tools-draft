@@ -15,10 +15,9 @@ debug() { echo "[DEBUG] $*"; }
 debug "Creating detached session..."
 TOP_PANE=$(tmux new-session -d -P -F "#{pane_id}" -s "$SESSION" -n main)
 
-# --- ATTACH BRIEFLY TO INITIALIZE TMUX ---
-tmux attach-session -t "$SESSION" \; detach-client
-
 # --- GET REAL TERMINAL SIZE ---
+debug "Querying real tmux terminal size..."
+sleep 0.1  # small sleep to let tmux initialize
 TERM_WIDTH=$(tmux display-message -p -t "$TOP_PANE" "#{window_width}")
 TERM_HEIGHT=$(tmux display-message -p -t "$TOP_PANE" "#{window_height}")
 debug "Terminal size inside tmux: ${TERM_WIDTH}x${TERM_HEIGHT}"
@@ -64,7 +63,9 @@ TARGET_HEIGHT=$(( TERM_HEIGHT / N_ROWS ))
 for idx in "${!SPECIAL_PANES[@]}"; do
     WIDTH=$(( idx==SPECIAL_COLS-1 ? REMAIN_WIDTH : BASE_WIDTH ))
     tmux resize-pane -t "${SPECIAL_PANES[$idx]}" -x "$WIDTH" -y "$TARGET_HEIGHT" || true
+    debug "Special pane $idx resized to ${WIDTH}x${TARGET_HEIGHT}"
 done
+
 # Normal rows
 for row_idx in "${!NORMAL_ROWS_PANES[@]}"; do
     IFS=',' read -r -a panes <<< "${NORMAL_ROWS_PANES[$row_idx]}"
@@ -73,11 +74,13 @@ for row_idx in "${!NORMAL_ROWS_PANES[@]}"; do
     for col_idx in "${!panes[@]}"; do
         WIDTH=$(( col_idx==M_COLS-1 ? REMAIN_WIDTH : BASE_WIDTH ))
         tmux resize-pane -t "${panes[$col_idx]}" -x "$WIDTH" -y "$TARGET_HEIGHT" || true
+        debug "Normal row $row_idx, pane $col_idx resized to ${WIDTH}x${TARGET_HEIGHT}"
     done
 done
 
 # --- FINAL TILED LAYOUT ---
 tmux select-layout -t "$SESSION":0 tiled
+debug "Applied final tiled layout"
 
 # --- WAIT FOR PANES READY ---
 debug "Waiting for all panes to reach minimum size..."
@@ -86,10 +89,12 @@ for row_str in "${NORMAL_ROWS_PANES[@]}"; do
     IFS=',' read -r -a row_p <<< "$row_str"
     ALL_PANES+=("${row_p[@]}")
 done
+
 for pane in "${ALL_PANES[@]}"; do
     for attempt in {1..50}; do
         w=$(tmux display-message -p -t "$pane" "#{pane_width}")
         h=$(tmux display-message -p -t "$pane" "#{pane_height}")
+        debug "Pane $pane check: ${w}x${h}, need >= ${MIN_WIDTH}x${MIN_HEIGHT}"
         (( w >= MIN_WIDTH && h >= MIN_HEIGHT )) && break
         sleep 0.05
     done
