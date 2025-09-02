@@ -4,13 +4,11 @@ set -euo pipefail
 # --- ARGUMENTS ---
 N_ROWS=${1:-2}        # total rows
 M_COLS=${2:-3}        # default number of columns
-SPECIAL_COLS=${3:-1}  # columns for first (or last) row
-
-NUM_PANES=$(( (N_ROWS-1)*M_COLS + SPECIAL_COLS ))
+SPECIAL_COLS=${3:-1}  # columns for special row
+MIN_WIDTH=${4:-20}    # minimum pane width
+MIN_HEIGHT=${5:-10}   # minimum pane height
 
 SESSION="sess_$RANDOM"
-MIN_WIDTH=20
-MIN_HEIGHT=10
 
 debug() { echo "[DEBUG] $*"; }
 
@@ -40,35 +38,31 @@ done
 
 # --- SPLIT COLUMNS ---
 debug "Splitting columns..."
-NEW_PANE_IDS=()
+ALL_PANES=()
 for idx_row in "${!ROW_PANES[@]}"; do
     row_pane="${ROW_PANES[$idx_row]}"
-    NEW_PANE_IDS+=("$row_pane")
+    ALL_PANES+=("$row_pane")
 
     if (( idx_row == 0 )); then
-        # Special row columns
         COLS=$SPECIAL_COLS
-        for ((c=1; c<COLS; c++)); do
-            NEW_PANE_IDS+=("$(tmux split-window -h -t "$row_pane" -P -F "#{pane_id}")")
-        done
     else
-        # Remaining rows use M_COLS
-        for ((c=1; c<M_COLS; c++)); do
-            NEW_PANE_IDS+=("$(tmux split-window -h -t "$row_pane" -P -F "#{pane_id}")")
-        done
+        COLS=$M_COLS
     fi
+
+    for ((c=1; c<COLS; c++)); do
+        ALL_PANES+=("$(tmux split-window -h -t "$row_pane" -P -F "#{pane_id}")")
+    done
 done
 
-# Limit to NUM_PANES
-PANE_IDS=("${NEW_PANE_IDS[@]:0:NUM_PANES}")
-
-# --- FINAL TILED LAYOUT ---
-debug "Applying final tiled layout..."
-tmux select-layout -t "$SESSION":0 tiled
+# --- APPLY TILED LAYOUT ONLY TO NON-SPECIAL ROWS ---
+debug "Applying tiled layout to bottom rows..."
+for ((r=1; r<N_ROWS; r++)); do
+    tmux select-layout -t "${ROW_PANES[r]}" tiled
+done
 
 # --- WAIT UNTIL PANES HAVE MIN SIZE ---
 debug "Waiting for panes to reach minimum size..."
-for pane in "${PANE_IDS[@]}"; do
+for pane in "${ALL_PANES[@]}"; do
     for attempt in {1..50}; do
         w=$(tmux display-message -p -t "$pane" "#{pane_width}")
         h=$(tmux display-message -p -t "$pane" "#{pane_height}")
@@ -81,8 +75,8 @@ done
 debug "All panes logical sizes OK."
 
 # --- SEND COMMANDS TO PANES ---
-for idx in "${!PANE_IDS[@]}"; do
-    pane="${PANE_IDS[$idx]}"
+for idx in "${!ALL_PANES[@]}"; do
+    pane="${ALL_PANES[$idx]}"
     tmux send-keys -t "$pane" \
         "echo '>>> Pane $idx (ID: $pane)'; \
          IDX=$idx; \
