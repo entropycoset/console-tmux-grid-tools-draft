@@ -94,19 +94,29 @@ for pane in "${PANE_IDS[@]}"; do
 done
 debug "All panes logical sizes OK."
 
-# --- SEND COMMANDS TO PANES WITH tput STABILIZATION ---
+# --- SEND COMMANDS TO PANES WITH REAL PANE SIZE ---
 debug "Starting mc commands in panes..."
 for idx in "${!PANE_IDS[@]}"; do
     tmux send-keys -t "${PANE_IDS[$idx]}" \
         "echo '>>> Pane $idx'; \
          IDX=$idx; \
-         TARGET_COLS=$(( term_width / cols )); \
-         TARGET_LINES=$(( term_height / rows )); \
+         TARGET_COLS=\$(tmux display-message -p -t \$IDX \"#{pane_width}\"); \
+         TARGET_LINES=\$(tmux display-message -p -t \$IDX \"#{pane_height}\"); \
+         SECONDS_WAITED=0; \
          while true; do \
              LINES=\$(tput lines); COLS=\$(tput cols); \
-             if (( LINES >= TARGET_LINES && COLS >= TARGET_COLS )); then break; fi; \
+             if (( LINES >= TARGET_LINES - 3 && LINES <= TARGET_LINES + 3 && COLS >= TARGET_COLS - 3 && COLS <= TARGET_COLS + 3 )); then break; fi; \
              sleep 0.05; \
+             SECONDS_WAITED=\$((SECONDS_WAITED + 1)); \
+             if (( SECONDS_WAITED % 40 == 0 )); then \
+                 echo \"[DEBUG] Pane \$IDX waiting for terminal size: got \${LINES}x\${COLS}, expected ~\${TARGET_LINES}x\${TARGET_COLS}\"; \
+             fi; \
+             if (( SECONDS_WAITED >= 200 )); then \
+                 echo \"[WARN] Pane \$IDX timed out waiting for size. Launching mc anyway.\"; \
+                 break; \
+             fi; \
          done; \
+         sleep 0.25; \
          mkdir -p /tmp/\$IDX && mc /tmp/\$IDX" C-m
 done
 
@@ -114,6 +124,7 @@ done
 tmux bind-key -n M-q kill-session      # Alt+q
 tmux bind-key Q kill-session           # Ctrl+b then uppercase Q
 
+# --- DISABLE EXIT TRAP BEFORE FINAL ATTACH ---
 trap - EXIT
 debug "Session ready. Attaching..."
 tmux attach-session -t "$SESSION"
