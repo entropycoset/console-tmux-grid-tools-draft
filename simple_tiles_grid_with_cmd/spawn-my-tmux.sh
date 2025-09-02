@@ -7,16 +7,13 @@ M_COLS=${2:-3}        # default number of columns
 SPECIAL_COLS=${3:-1}  # columns for special row
 MIN_WIDTH=${4:-20}    # minimum pane width
 MIN_HEIGHT=${5:-10}   # minimum pane height
-
 SESSION="sess_$RANDOM"
 
 debug() { echo "[DEBUG] $*"; }
 
-# --- CHECKS ---
 command -v tmux >/dev/null 2>&1 || { echo "tmux not found"; exit 1; }
 command -v tput >/dev/null 2>&1 || { echo "tput not found"; exit 1; }
 
-# --- CLEANUP ---
 cleanup() { tmux kill-session -t "$SESSION" 2>/dev/null || true; }
 trap cleanup EXIT
 
@@ -46,33 +43,23 @@ for idx_row in "${!ROW_PANES[@]}"; do
     ALL_PANES+=("$row_pane")
 
     if (( idx_row == 0 )); then
-        COLS=$SPECIAL_COLS
+        # Special row
+        SPECIAL_ROW_PANES=("$row_pane")
+        for ((c=1; c<SPECIAL_COLS; c++)); do
+            new_pane=$(tmux split-window -h -t "${SPECIAL_ROW_PANES[0]}" -P -F "#{pane_id}")
+            SPECIAL_ROW_PANES+=("$new_pane")
+            ALL_PANES+=("$new_pane")
+        done
     else
-        COLS=$M_COLS
+        # Normal rows
+        for ((c=1; c<M_COLS; c++)); do
+            new_pane=$(tmux split-window -h -t "$row_pane" -P -F "#{pane_id}")
+            ALL_PANES+=("$new_pane")
+        done
     fi
-
-    for ((c=1; c<COLS; c++)); do
-        new_pane=$(tmux split-window -h -t "$row_pane" -P -F "#{pane_id}")
-        ALL_PANES+=("$new_pane")
-        (( idx_row == 0 )) && SPECIAL_ROW_PANES+=("$new_pane")
-    done
-    (( idx_row == 0 )) && SPECIAL_ROW_PANES+=("$row_pane")
 done
 
-# --- EQUALIZE SPECIAL ROW WIDTHS ---
-if (( SPECIAL_COLS > 1 )); then
-    debug "Adjusting special row panes to roughly equal width..."
-    # Get total width of first pane (special row)
-    total_width=$(tmux display-message -p -t "${ROW_PANES[0]}" "#{pane_width}")
-    target_width=$(( total_width / SPECIAL_COLS ))
-
-    # Resize each pane to target width (except last one)
-    for ((i=0; i<SPECIAL_COLS-1; i++)); do
-        tmux resize-pane -t "${SPECIAL_ROW_PANES[i]}" -x $target_width
-    done
-fi
-
-# --- APPLY TILED LAYOUT ONLY TO NON-SPECIAL ROWS ---
+# --- TILE ONLY NON-SPECIAL ROWS ---
 debug "Applying tiled layout to bottom rows..."
 for ((r=1; r<N_ROWS; r++)); do
     tmux select-layout -t "${ROW_PANES[r]}" tiled
@@ -90,7 +77,20 @@ for pane in "${ALL_PANES[@]}"; do
         sleep 0.05
     done
 done
-debug "All panes logical sizes OK."
+
+# --- RESIZE SPECIAL ROW PANES TO BE ROUGHLY EQUAL WIDTH ---
+debug "Adjusting special row panes..."
+# Get total width of window
+window_width=$(tmux display-message -p -t "${ROW_PANES[0]}" "#{window_width}")
+target_width=$(( window_width / SPECIAL_COLS ))
+
+for ((i=0; i<SPECIAL_COLS-1; i++)); do
+    current_width=$(tmux display-message -p -t "${SPECIAL_ROW_PANES[i]}" "#{pane_width}")
+    delta=$(( target_width - current_width ))
+    if (( delta > 0 )); then
+        tmux resize-pane -t "${SPECIAL_ROW_PANES[i]}" -R $delta
+    fi
+done
 
 # --- SEND COMMANDS TO PANES ---
 for idx in "${!ALL_PANES[@]}"; do
@@ -119,12 +119,11 @@ for idx in "${!ALL_PANES[@]}"; do
 done
 
 # --- BIND QUIT KEYS ---
-tmux bind-key -n M-q kill-session      # Alt+q
-tmux bind-key Q kill-session           # Ctrl+b then uppercase Q
+tmux bind-key -n M-q kill-session
+tmux bind-key Q kill-session
 
 # --- FINAL ATTACH ---
 trap - EXIT
 debug "Session ready. Attaching..."
 tmux attach-session -t "$SESSION"
-
 
