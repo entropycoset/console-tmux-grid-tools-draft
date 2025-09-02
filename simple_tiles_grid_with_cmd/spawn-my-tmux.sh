@@ -1,132 +1,130 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-N_ROWS=${1:-3}        # total rows
-M_COLS=${2:-3}        # columns for normal rows
-SPECIAL_COLS=${3:-2}  # columns in special first row
-SESSION="sess_$RANDOM"
+# Usage: ./spawn-my-tmux.sh ROWS COLS SPECIAL_COLS
+N_ROWS=${1:-3}
+M_COLS=${2:-3}
+Z_COLS=${3:-2}
 
-MIN_WIDTH=10
-MIN_HEIGHT=5
+MIN_WIDTH=5
+MIN_HEIGHT=10
+MC_SLEEP=0.25
+TOLERANCE=3
 
 debug() { echo "[DEBUG] $*"; }
 
-# --- CREATE DETACHED SESSION ---
+SESSION="sess_$RANDOM"
+ALL_PANES=()
+
+# --- Create detached session ---
 debug "Creating detached session..."
-TOP_PANE=$(tmux new-session -d -P -F "#{pane_id}" -s "$SESSION" -n main)
+tmux new-session -d -s "$SESSION" -x 200 -y 50
+debug "Session $SESSION created"
 
-# --- GET REAL TERMINAL SIZE ---
-debug "Querying real tmux terminal size..."
-sleep 0.1  # small sleep to let tmux initialize
-TERM_WIDTH=$(tmux display-message -p -t "$TOP_PANE" "#{window_width}")
-TERM_HEIGHT=$(tmux display-message -p -t "$TOP_PANE" "#{window_height}")
-debug "Terminal size inside tmux: ${TERM_WIDTH}x${TERM_HEIGHT}"
+# --- Attach briefly to force tmux window to match terminal ---
+debug "Attaching briefly to force tmux window to match terminal..."
+tmux attach-session -t "$SESSION" \; detach-client
+TERM_WIDTH=$(tmux display-message -p -t "$SESSION" "#{client_width}")
+TERM_HEIGHT=$(tmux display-message -p -t "$SESSION" "#{client_height}")
+debug "Terminal size inside tmux after attach: ${TERM_WIDTH}x${TERM_HEIGHT}"
 
-# --- SPLIT SPECIAL ROW EVENLY ---
-debug "Splitting special top row into $SPECIAL_COLS evenly..."
-SPECIAL_PANES=("$TOP_PANE")
-if (( SPECIAL_COLS > 1 )); then
-    for ((c=1;c<SPECIAL_COLS;c++)); do
-        NEW_PANE=$(tmux split-window -h -t "${SPECIAL_PANES[-1]}" -P -F "#{pane_id}")
-        SPECIAL_PANES+=("$NEW_PANE")
-    done
+if (( TERM_WIDTH < 10 || TERM_HEIGHT < 5 )); then
+    debug "ERROR: tmux reports very small window size! Exiting."
+    tmux kill-session -t "$SESSION"
+    exit 1
 fi
 
-# --- CREATE REMAINING ROWS ---
+# --- Split special top row ---
+debug "Splitting special top row into $Z_COLS evenly..."
+TOP_PANES=()
+tmux select-pane -t 0
+for ((i=1;i<Z_COLS;i++)); do
+    tmux split-window -h -t 0
+done
+tmux select-layout tiled
+sleep 0.1
+
+for p in $(tmux list-panes -F "#{pane_index}" | head -n "$Z_COLS"); do
+    TOP_PANES+=("%$p")
+    ALL_PANES+=("%$p")
+done
+
+# --- Create remaining rows ---
 debug "Creating remaining $((N_ROWS-1)) rows..."
-NORMAL_ROWS=()
 for ((r=1;r<N_ROWS;r++)); do
-    NEW_ROW=$(tmux split-window -v -t "${SPECIAL_PANES[0]}" -P -F "#{pane_id}")
-    NORMAL_ROWS+=("$NEW_ROW")
+    tmux split-window -v -t 0
 done
+sleep 0.1
 
-# --- SPLIT NORMAL ROWS INTO M_COLS evenly ---
+# --- Split normal rows into M_COLS columns ---
 debug "Splitting normal rows into $M_COLS columns..."
-NORMAL_ROWS_PANES=()
-for ROW_PANE in "${NORMAL_ROWS[@]}"; do
-    PANES=("$ROW_PANE")
-    if (( M_COLS > 1 )); then
-        for ((c=1;c<M_COLS;c++)); do
-            NEW_PANE=$(tmux split-window -h -t "${PANES[-1]}" -P -F "#{pane_id}")
-            PANES+=("$NEW_PANE")
-        done
-    fi
-    NORMAL_ROWS_PANES+=("$(IFS=, ; echo "${PANES[*]}")")
-done
+for row in $(seq 1 $((N_ROWS-1))); do
+    row_pane_idx=$(tmux list-panes -F "#{pane_index} #{pane_top}" | awk -v r=$row '$2>0' | head -n1 | awk '{print $1}')
+    tmux select-pane -t "$row_pane_idx"
+    for ((c=1;c<M_COLS;c++)); do
+        tmux split-window -h -t "$row_pane_idx"
+    done
+    tmux select-layout tiled
+    sleep 0.05
 
-# --- MANUAL RESIZE ALL PANES ---
-debug "Manually resizing panes..."
-# Top special row
-BASE_WIDTH=$(( TERM_WIDTH / SPECIAL_COLS ))
-REMAIN_WIDTH=$(( TERM_WIDTH - BASE_WIDTH*(SPECIAL_COLS-1) ))
-TARGET_HEIGHT=$(( TERM_HEIGHT / N_ROWS ))
-for idx in "${!SPECIAL_PANES[@]}"; do
-    WIDTH=$(( idx==SPECIAL_COLS-1 ? REMAIN_WIDTH : BASE_WIDTH ))
-    tmux resize-pane -t "${SPECIAL_PANES[$idx]}" -x "$WIDTH" -y "$TARGET_HEIGHT" || true
-    debug "Special pane $idx resized to ${WIDTH}x${TARGET_HEIGHT}"
-done
-
-# Normal rows
-for row_idx in "${!NORMAL_ROWS_PANES[@]}"; do
-    IFS=',' read -r -a panes <<< "${NORMAL_ROWS_PANES[$row_idx]}"
-    BASE_WIDTH=$(( TERM_WIDTH / M_COLS ))
-    REMAIN_WIDTH=$(( TERM_WIDTH - BASE_WIDTH*(M_COLS-1) ))
-    for col_idx in "${!panes[@]}"; do
-        WIDTH=$(( col_idx==M_COLS-1 ? REMAIN_WIDTH : BASE_WIDTH ))
-        tmux resize-pane -t "${panes[$col_idx]}" -x "$WIDTH" -y "$TARGET_HEIGHT" || true
-        debug "Normal row $row_idx, pane $col_idx resized to ${WIDTH}x${TARGET_HEIGHT}"
+    for p in $(tmux list-panes -F "#{pane_index} #{pane_top}" | awk -v r=$row '$2>0' | awk '{print "%"$1}'); do
+        ALL_PANES+=("$p")
     done
 done
 
-# --- FINAL TILED LAYOUT ---
-tmux select-layout -t "$SESSION":0 tiled
-debug "Applied final tiled layout"
-
-# --- WAIT FOR PANES READY ---
-debug "Waiting for all panes to reach minimum size..."
-ALL_PANES=("${SPECIAL_PANES[@]}")
-for row_str in "${NORMAL_ROWS_PANES[@]}"; do
-    IFS=',' read -r -a row_p <<< "$row_str"
-    ALL_PANES+=("${row_p[@]}")
+# --- Manual resizing for special top row evenly ---
+debug "Manually resizing special top row panes evenly..."
+TOP_WIDTH=$(( TERM_WIDTH / Z_COLS ))
+for idx in "${!TOP_PANES[@]}"; do
+    tmux resize-pane -t "${TOP_PANES[$idx]}" -x "$TOP_WIDTH"
+    debug "Special pane $idx manually resized to $TOP_WIDTH columns"
 done
 
+# --- Wait for all panes to reach minimum size ---
+debug "Waiting for all panes to reach minimum size with tolerance ±$TOLERANCE..."
 for pane in "${ALL_PANES[@]}"; do
-    for attempt in {1..50}; do
+    last_debug=0
+    while true; do
         w=$(tmux display-message -p -t "$pane" "#{pane_width}")
         h=$(tmux display-message -p -t "$pane" "#{pane_height}")
-        debug "Pane $pane check: ${w}x${h}, need >= ${MIN_WIDTH}x${MIN_HEIGHT}"
-        (( w >= MIN_WIDTH && h >= MIN_HEIGHT )) && break
+        if (( w >= MIN_WIDTH && h >= MIN_HEIGHT )); then
+            break
+        fi
+        now=$(date +%s)
+        if (( now - last_debug >= 2 )); then
+            debug "Pane $pane waiting: got ${h}x${w}, need >= ${MIN_HEIGHT}x${MIN_WIDTH}"
+            last_debug=$now
+        fi
         sleep 0.05
     done
 done
 debug "All panes logical sizes OK."
 
-# --- LAUNCH MC ONCE PER PANE WITH DEBUG ---
-debug "Launching mc in panes..."
+# --- Launch MC in panes without blocking ---
+debug "Launching MC in panes..."
 MC_IDX=0
-# Top special row
-for idx in "${!SPECIAL_PANES[@]}"; do
-    pane="${SPECIAL_PANES[$idx]}"
-    echo "[DEBUG] MC $MC_IDX -> Pane ID=$pane (special top row, col $idx)"
-    tmux send-keys -t "$pane" "sleep 0.25; mkdir -p /tmp/$MC_IDX; mc /tmp/$MC_IDX" C-m
+for pane in "${ALL_PANES[@]}"; do
+    debug "MC $MC_IDX -> Pane ID=$pane"
+
+    # Queue command
+    tmux send-keys -t "$pane" "sleep $MC_SLEEP; mkdir -p /tmp/$MC_IDX; mc /tmp/$MC_IDX" C-m
+
+    # Wait until mc spawned in pane (non-blocking)
+    pane_pid=$(tmux display-message -p -t "$pane" "#{pane_pid}")
+    for attempt in {1..50}; do
+        if pgrep -P "$pane_pid" mc >/dev/null 2>&1; then
+            debug "MC $MC_IDX started in Pane $pane"
+            break
+        fi
+        sleep 0.05
+    done
     ((MC_IDX++))
 done
-# Normal rows
-for row_str in "${NORMAL_ROWS_PANES[@]}"; do
-    IFS=',' read -r -a panes <<< "$row_str"
-    for col_idx in "${!panes[@]}"; do
-        pane="${panes[$col_idx]}"
-        echo "[DEBUG] MC $MC_IDX -> Pane ID=$pane (row, col $col_idx)"
-        tmux send-keys -t "$pane" "sleep 0.25; mkdir -p /tmp/$MC_IDX; mc /tmp/$MC_IDX" C-m
-        ((MC_IDX++))
-    done
-done
 
-# --- BIND QUIT KEYS ---
-tmux bind-key -n M-q kill-session      # Alt+q
-tmux bind-key Q kill-session           # Ctrl+b then uppercase Q
+# --- Bind Ctrl-B Q to kill session ---
+tmux bind-key Q kill-session -t "$SESSION"
 
-# --- ATTACH SESSION ---
-debug "Session ready. Attaching..."
+# --- Attach session after all MC spawned ---
+debug "All MC instances spawned. Attaching session..."
 tmux attach-session -t "$SESSION"
 
