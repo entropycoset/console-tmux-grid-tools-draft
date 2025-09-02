@@ -37,21 +37,8 @@ term_width=$(tmux display-message -p -t "$SESSION":0 -F "#{window_width}")
 term_height=$(tmux display-message -p -t "$SESSION":0 -F "#{window_height}")
 debug "Terminal size: ${term_width}x${term_height}"
 
-# --- COMPUTE GRID ---
-rows=$MIN_ROWS
-while true; do
-    cols=$(( (NUM_PANES + rows - 1) / rows ))
-    pane_width=$(( term_width / cols ))
-    pane_height=$(( term_height / rows ))
-    if (( pane_width >= MIN_WIDTH && pane_height >= MIN_HEIGHT )); then
-        break
-    fi
-    ((rows++))
-done
-cols=$(( (NUM_PANES + rows - 1) / rows ))
-debug "Using grid: ${rows} rows x ${cols} columns"
-
 # --- SPLIT ROWS ---
+rows=$MIN_ROWS
 debug "Splitting rows..."
 for ((r=1; r<rows; r++)); do
     PANE_IDS+=("$(tmux split-window -v -t "${PANE_IDS[0]}" -P -F "#{pane_id}")")
@@ -61,19 +48,34 @@ ROW_PANES=("${PANE_IDS[@]}")
 # --- SPLIT COLUMNS ---
 debug "Splitting columns..."
 NEW_PANE_IDS=()
-for row_pane in "${ROW_PANES[@]}"; do
+for idx_row in "${!ROW_PANES[@]}"; do
+    row_pane="${ROW_PANES[$idx_row]}"
     NEW_PANE_IDS+=("$row_pane")
-    for ((c=1; c<cols; c++)); do
-        NEW_PANE_IDS+=("$(tmux split-window -h -t "$row_pane" -P -F "#{pane_id}")")
-    done
+
+    # First row special: only 2 columns
+    if (( idx_row == 0 )); then
+        for ((c=1; c<2; c++)); do
+            NEW_PANE_IDS+=("$(tmux split-window -h -t "$row_pane" -P -F "#{pane_id}")")
+        done
+    else
+        # Other rows: distribute remaining panes equally
+        remaining=$((NUM_PANES - ${#NEW_PANE_IDS[@]}))
+        if (( remaining > 0 )); then
+            for ((c=1; c<remaining; c++)); do
+                NEW_PANE_IDS+=("$(tmux split-window -h -t "$row_pane" -P -F "#{pane_id}")")
+            done
+        fi
+    fi
 done
+
+# Limit to NUM_PANES
 PANE_IDS=("${NEW_PANE_IDS[@]:0:NUM_PANES}")
 
 # --- FINAL TILED LAYOUT ---
 debug "Applying final tiled layout..."
 tmux select-layout -t "$SESSION":0 tiled
 
-# --- WAIT UNTIL PANES HAVE MIN SIZE (logical tmux) ---
+# --- WAIT UNTIL PANES HAVE MIN SIZE ---
 debug "Waiting for panes to reach minimum size..."
 for pane in "${PANE_IDS[@]}"; do
     for attempt in {1..50}; do
@@ -94,14 +96,15 @@ for pane in "${PANE_IDS[@]}"; do
 done
 debug "All panes logical sizes OK."
 
-# --- SEND COMMANDS TO PANES WITH REAL PANE SIZE ---
+# --- SEND COMMANDS TO PANES USING PANE IDS (NOT NAMES) ---
 debug "Starting mc commands in panes..."
 for idx in "${!PANE_IDS[@]}"; do
-    tmux send-keys -t "${PANE_IDS[$idx]}" \
-        "echo '>>> Pane $idx'; \
+    pane="${PANE_IDS[$idx]}"
+    tmux send-keys -t "$pane" \
+        "echo '>>> Pane $idx (ID: $pane)'; \
          IDX=$idx; \
-         TARGET_COLS=\$(tmux display-message -p -t \$IDX \"#{pane_width}\"); \
-         TARGET_LINES=\$(tmux display-message -p -t \$IDX \"#{pane_height}\"); \
+         TARGET_COLS=\$(tmux display-message -p -t $pane \"#{pane_width}\"); \
+         TARGET_LINES=\$(tmux display-message -p -t $pane \"#{pane_height}\"); \
          SECONDS_WAITED=0; \
          while true; do \
              LINES=\$(tput lines); COLS=\$(tput cols); \
@@ -126,6 +129,8 @@ tmux bind-key Q kill-session           # Ctrl+b then uppercase Q
 
 # --- DISABLE EXIT TRAP BEFORE FINAL ATTACH ---
 trap - EXIT
+
+# --- FINAL ATTACH ---
 debug "Session ready. Attaching..."
 tmux attach-session -t "$SESSION"
 
