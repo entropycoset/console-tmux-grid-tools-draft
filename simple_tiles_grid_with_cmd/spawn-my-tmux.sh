@@ -39,6 +39,8 @@ done
 # --- SPLIT COLUMNS ---
 debug "Splitting columns..."
 ALL_PANES=()
+SPECIAL_ROW_PANES=()
+
 for idx_row in "${!ROW_PANES[@]}"; do
     row_pane="${ROW_PANES[$idx_row]}"
     ALL_PANES+=("$row_pane")
@@ -50,9 +52,25 @@ for idx_row in "${!ROW_PANES[@]}"; do
     fi
 
     for ((c=1; c<COLS; c++)); do
-        ALL_PANES+=("$(tmux split-window -h -t "$row_pane" -P -F "#{pane_id}")")
+        new_pane=$(tmux split-window -h -t "$row_pane" -P -F "#{pane_id}")
+        ALL_PANES+=("$new_pane")
+        (( idx_row == 0 )) && SPECIAL_ROW_PANES+=("$new_pane")
     done
+    (( idx_row == 0 )) && SPECIAL_ROW_PANES+=("$row_pane")
 done
+
+# --- EQUALIZE SPECIAL ROW WIDTHS ---
+if (( SPECIAL_COLS > 1 )); then
+    debug "Adjusting special row panes to roughly equal width..."
+    # Get total width of first pane (special row)
+    total_width=$(tmux display-message -p -t "${ROW_PANES[0]}" "#{pane_width}")
+    target_width=$(( total_width / SPECIAL_COLS ))
+
+    # Resize each pane to target width (except last one)
+    for ((i=0; i<SPECIAL_COLS-1; i++)); do
+        tmux resize-pane -t "${SPECIAL_ROW_PANES[i]}" -x $target_width
+    done
+fi
 
 # --- APPLY TILED LAYOUT ONLY TO NON-SPECIAL ROWS ---
 debug "Applying tiled layout to bottom rows..."
@@ -108,4 +126,5 @@ tmux bind-key Q kill-session           # Ctrl+b then uppercase Q
 trap - EXIT
 debug "Session ready. Attaching..."
 tmux attach-session -t "$SESSION"
+
 
