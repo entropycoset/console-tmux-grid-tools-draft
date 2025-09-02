@@ -1,23 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# --- CONFIG ---
-NUM_PANES=6
+# --- ARGUMENTS ---
+N_ROWS=${1:-2}        # total rows
+M_COLS=${2:-3}        # default number of columns
+SPECIAL_COLS=${3:-1}  # columns for first (or last) row
+
+NUM_PANES=$(( (N_ROWS-1)*M_COLS + SPECIAL_COLS ))
+
+SESSION="sess_$RANDOM"
 MIN_WIDTH=20
 MIN_HEIGHT=10
-MIN_ROWS=2
-SESSION="sess_$RANDOM"
 
 debug() { echo "[DEBUG] $*"; }
 
 # --- CHECKS ---
 command -v tmux >/dev/null 2>&1 || { echo "tmux not found"; exit 1; }
 command -v tput >/dev/null 2>&1 || { echo "tput not found"; exit 1; }
-
-if tmux has-session -t "$SESSION" 2>/dev/null; then
-    echo "Session $SESSION already exists, exiting"
-    exit 1
-fi
 
 # --- CLEANUP ---
 cleanup() { tmux kill-session -t "$SESSION" 2>/dev/null || true; }
@@ -28,22 +27,16 @@ debug "Creating detached session..."
 PANE_IDS=()
 PANE_IDS+=("$(tmux new-session -d -P -F "#{pane_id}" -s "$SESSION" -n main)")
 
-# --- ATTACH BRIEFLY TO REGISTER TERMINAL SIZE ---
+# --- ATTACH BRIEFLY TO GET TERMINAL SIZE ---
 debug "Attaching briefly to get real terminal size..."
 tmux attach-session -t "$SESSION" \; detach-client
 
-# --- GET USABLE WINDOW SIZE ---
-term_width=$(tmux display-message -p -t "$SESSION":0 -F "#{window_width}")
-term_height=$(tmux display-message -p -t "$SESSION":0 -F "#{window_height}")
-debug "Terminal size: ${term_width}x${term_height}"
-
 # --- SPLIT ROWS ---
-rows=$MIN_ROWS
 debug "Splitting rows..."
-for ((r=1; r<rows; r++)); do
-    PANE_IDS+=("$(tmux split-window -v -t "${PANE_IDS[0]}" -P -F "#{pane_id}")")
-done
 ROW_PANES=("${PANE_IDS[@]}")
+for ((r=1; r<N_ROWS; r++)); do
+    ROW_PANES+=("$(tmux split-window -v -t "${ROW_PANES[0]}" -P -F "#{pane_id}")")
+done
 
 # --- SPLIT COLUMNS ---
 debug "Splitting columns..."
@@ -52,19 +45,17 @@ for idx_row in "${!ROW_PANES[@]}"; do
     row_pane="${ROW_PANES[$idx_row]}"
     NEW_PANE_IDS+=("$row_pane")
 
-    # First row special: only 2 columns
     if (( idx_row == 0 )); then
-        for ((c=1; c<2; c++)); do
+        # Special row columns
+        COLS=$SPECIAL_COLS
+        for ((c=1; c<COLS; c++)); do
             NEW_PANE_IDS+=("$(tmux split-window -h -t "$row_pane" -P -F "#{pane_id}")")
         done
     else
-        # Other rows: distribute remaining panes equally
-        remaining=$((NUM_PANES - ${#NEW_PANE_IDS[@]}))
-        if (( remaining > 0 )); then
-            for ((c=1; c<remaining; c++)); do
-                NEW_PANE_IDS+=("$(tmux split-window -h -t "$row_pane" -P -F "#{pane_id}")")
-            done
-        fi
+        # Remaining rows use M_COLS
+        for ((c=1; c<M_COLS; c++)); do
+            NEW_PANE_IDS+=("$(tmux split-window -h -t "$row_pane" -P -F "#{pane_id}")")
+        done
     fi
 done
 
@@ -86,18 +77,10 @@ for pane in "${PANE_IDS[@]}"; do
         fi
         sleep 0.05
     done
-    w=$(tmux display-message -p -t "$pane" "#{pane_width}")
-    h=$(tmux display-message -p -t "$pane" "#{pane_height}")
-    if (( w < MIN_WIDTH || h < MIN_HEIGHT )); then
-        echo "ERROR: Pane $pane too small: ${w}x${h}"
-        tmux kill-session -t "$SESSION"
-        exit 1
-    fi
 done
 debug "All panes logical sizes OK."
 
-# --- SEND COMMANDS TO PANES USING PANE IDS (NOT NAMES) ---
-debug "Starting mc commands in panes..."
+# --- SEND COMMANDS TO PANES ---
 for idx in "${!PANE_IDS[@]}"; do
     pane="${PANE_IDS[$idx]}"
     tmux send-keys -t "$pane" \
@@ -127,10 +110,8 @@ done
 tmux bind-key -n M-q kill-session      # Alt+q
 tmux bind-key Q kill-session           # Ctrl+b then uppercase Q
 
-# --- DISABLE EXIT TRAP BEFORE FINAL ATTACH ---
-trap - EXIT
-
 # --- FINAL ATTACH ---
+trap - EXIT
 debug "Session ready. Attaching..."
 tmux attach-session -t "$SESSION"
 
