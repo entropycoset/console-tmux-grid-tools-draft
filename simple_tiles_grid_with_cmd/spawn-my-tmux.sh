@@ -12,6 +12,8 @@ debug() { echo "[DEBUG] $*"; }
 
 # --- CHECKS ---
 command -v tmux >/dev/null 2>&1 || { echo "tmux not found"; exit 1; }
+command -v tput >/dev/null 2>&1 || { echo "tput not found"; exit 1; }
+
 if tmux has-session -t "$SESSION" 2>/dev/null; then
     echo "Session $SESSION already exists, exiting"
     exit 1
@@ -71,8 +73,8 @@ PANE_IDS=("${NEW_PANE_IDS[@]:0:NUM_PANES}")
 debug "Applying final tiled layout..."
 tmux select-layout -t "$SESSION":0 tiled
 
-# --- WAIT UNTIL PANES HAVE MIN SIZE (polling loop) ---
-debug "Waiting for all panes to reach minimum size..."
+# --- WAIT UNTIL PANES HAVE MIN SIZE (logical tmux) ---
+debug "Waiting for panes to reach minimum size..."
 for pane in "${PANE_IDS[@]}"; do
     for attempt in {1..50}; do
         w=$(tmux display-message -p -t "$pane" "#{pane_width}")
@@ -90,18 +92,27 @@ for pane in "${PANE_IDS[@]}"; do
         exit 1
     fi
 done
-debug "All panes ready."
+debug "All panes logical sizes OK."
 
-# --- SEND COMMANDS TO PANES ---
+# --- SEND COMMANDS TO PANES WITH tput STABILIZATION ---
 debug "Starting mc commands in panes..."
 for idx in "${!PANE_IDS[@]}"; do
     tmux send-keys -t "${PANE_IDS[$idx]}" \
-        "echo '>>> Pane $idx'; mkdir -p /tmp/$idx && mc /tmp/$idx" C-m
+        "echo '>>> Pane $idx'; \
+         IDX=$idx; \
+         TARGET_COLS=$(( term_width / cols )); \
+         TARGET_LINES=$(( term_height / rows )); \
+         while true; do \
+             LINES=\$(tput lines); COLS=\$(tput cols); \
+             if (( LINES >= TARGET_LINES && COLS >= TARGET_COLS )); then break; fi; \
+             sleep 0.05; \
+         done; \
+         mkdir -p /tmp/\$IDX && mc /tmp/\$IDX" C-m
 done
 
 # --- BIND QUIT KEYS ---
-tmux bind-key -n M-q kill-session
-tmux bind-key Q kill-session
+tmux bind-key -n M-q kill-session      # Alt+q
+tmux bind-key Q kill-session           # Ctrl+b then uppercase Q
 
 trap - EXIT
 debug "Session ready. Attaching..."
